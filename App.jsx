@@ -1,14 +1,15 @@
-
-
-
 import React, { useState, useEffect, useRef } from 'react';
 import MapboxGL from '@rnmapbox/maps';
 import {
    View, Text, StyleSheet, TouchableOpacity, PermissionsAndroid, Platform,
-   Image
+   Image,
+   ScrollView,
+   Modal
 } from 'react-native';
 import * as turf from '@turf/turf'; 
 import Geolocation from '@react-native-community/geolocation';
+import PolygonList from './src/PolygonList';
+
 
 MapboxGL.setAccessToken('pk.eyJ1Ijoic2hlZW5hMjAyNCIsImEiOiJjbHljejRucWgwMGxlMnJxd3YxYnR2ZmF5In0.V5xOrFpmmXijq6nc4lKTsw');
 
@@ -24,6 +25,8 @@ export default function App() {
    });
    const [areas, setAreas] = useState([]); 
    const polygonCoordinatesRef = useRef([]);
+   const [locationLoaded, setLocationLoaded] = useState(false);
+   const [showPolygonList, setShowPolygonList] = useState(false);
 
    useEffect(() => {
       if (!isDrawing) polygonCoordinatesRef.current = [];
@@ -58,6 +61,7 @@ export default function App() {
                      ...prevCamera,
                      centerCoordinate: [longitude, latitude],
                   }));
+                  setLocationLoaded(true); 
                },
                (error) => {
                   console.error('Error fetching location:', error);
@@ -90,21 +94,23 @@ export default function App() {
          alert("A polygon requires at least three points.");
          return;
       }
-
+   
       const closedPolygon = [...polygonCoordinatesRef.current, polygonCoordinatesRef.current[0]];
       const polygonFeature = turf.polygon([closedPolygon]);
-      const calculatedArea = turf.area(polygonFeature);
-
-      
+      const calculatedAreaM2 = turf.area(polygonFeature); 
+      const calculatedAreaAcres = calculatedAreaM2 / 4046.86; 
+   
       setPolygons([...polygons, closedPolygon]);
-      if (areas.length < 5) { 
-         setAreas((prevAreas) => [...prevAreas, calculatedArea]);
+      if (areas?.length < 15) { 
+         setAreas((prevAreas) => [...prevAreas, calculatedAreaAcres]); 
       } else {
-         alert("Maximum of 5 polygons reached.");
+         alert("Maximum of 15 polygons reached.");
       }
-
+   
       setIsDrawing(false);
+      setMapPoints([]);
    };
+   
 
    const centerMapOnUserLocation = () => {
       if (userLocation) {
@@ -118,9 +124,13 @@ export default function App() {
       }
    };
 
+   const handleClosePolygonList = () => {
+      setShowPolygonList(false); 
+   };
+
    return (
       <View style={styles.container}>
-         <MapboxGL.MapView
+          <MapboxGL.MapView
             style={styles.map}
             styleURL={MapboxGL.StyleURL.Satellite}
             onPress={onMapPress}
@@ -128,10 +138,23 @@ export default function App() {
             zoomEnabled={!isDrawing}
             onDidFinishLoadingMap={() => console.log('Map Loaded')}
          >
-            <MapboxGL.UserLocation
-               visible={true}
-               onUpdate={(location) => setUserLocation(location.coords)}
-            />
+            {locationLoaded && (
+               <MapboxGL.UserLocation
+                  visible={true}
+                  onUpdate={(location) => {
+                     setUserLocation(location.coords);
+                     if (!locationLoaded) {
+                        setCamera({
+                           centerCoordinate: [location.coords.longitude, location.coords.latitude],
+                           zoomLevel: 10,
+                           animationDuration: 1000,
+                        });
+                        setLocationLoaded(true);
+                     }
+                  }}
+               />
+            )}
+
             <MapboxGL.Camera
                centerCoordinate={camera.centerCoordinate}
                zoomLevel={camera.zoomLevel}
@@ -139,8 +162,37 @@ export default function App() {
                animationDuration={camera.animationDuration}
             />
 
-           
-            {polygons.map((polygon, index) => (
+            {isDrawing && mapPoints?.length > 1 && (
+               <MapboxGL.ShapeSource
+                  id="line-source"
+                  shape={{
+                     type: 'Feature',
+                     geometry: {
+                        type: 'LineString',
+                        coordinates: mapPoints,
+                     },
+                  }}
+               >
+                  <MapboxGL.LineLayer id="line-layer" style={styles.line} />
+               </MapboxGL.ShapeSource>
+            )}
+
+            {isDrawing && mapPoints?.length >= 3 && (
+               <MapboxGL.ShapeSource
+                  id="closing-line-source"
+                  shape={{
+                     type: 'Feature',
+                     geometry: {
+                        type: 'LineString',
+                        coordinates: [mapPoints[mapPoints?.length - 1], mapPoints[0]],
+                     },
+                  }}
+               >
+                  <MapboxGL.LineLayer id="closing-line-layer" style={styles.closingLine} />
+               </MapboxGL.ShapeSource>
+            )}
+
+            {polygons?.map((polygon, index) => (
                <MapboxGL.ShapeSource
                   key={`polygon-${index}`}
                   id={`polygon-${index}`}
@@ -156,8 +208,7 @@ export default function App() {
                </MapboxGL.ShapeSource>
             ))}
 
-            
-            {mapPoints.map((point, index) => (
+            {mapPoints?.map((point, index) => (
                <MapboxGL.PointAnnotation
                   key={`point-${index}`}
                   id={`point-${index}`}
@@ -168,20 +219,25 @@ export default function App() {
             ))}
          </MapboxGL.MapView>
 
-         
-         {areas.map((area, index) => (
-            <View
-            key={`area-card-${index}`}
-            style={[
-               styles.areaCard,
-               { bottom: 150 + index * 55 },
-            ]}
-         >
-            <Text style={{ color: 'blue' }}>Polygon Area: {area.toFixed(2)} m²</Text>
-         </View>
-         ))}
+         <TouchableOpacity style={styles.listButton} onPress={() => setShowPolygonList(!showPolygonList)}>
+            <Text style={styles.buttonText}>{showPolygonList ? 'Hide Polygon List' : 'Show Polygon List'}</Text>
+         </TouchableOpacity>
 
-         
+         {showPolygonList && (
+            <PolygonList polygons={polygons} areas={areas} onClose={handleClosePolygonList} />
+         )}
+
+
+         {areas?.length > 0 && (
+            <View style={styles.areaCard}>
+               <Text style={{ color: 'blue' }}>
+                  Polygon Area: {areas[areas?.length - 1].toFixed(2)} acres
+               </Text>
+            </View>
+         )}
+
+
+
          <TouchableOpacity style={styles.locateButton} onPress={centerMapOnUserLocation}>
             <Image
                source={require('./assets/locateMe.png')} 
@@ -201,9 +257,10 @@ export default function App() {
    );
 }
 
+
 const styles = StyleSheet.create({
    container: { flex: 1 },
-   map: { flex: 1 },
+   map: { flex: 1,  },
    button: {
       position: 'absolute',
       bottom: 100,
@@ -211,23 +268,23 @@ const styles = StyleSheet.create({
       backgroundColor: 'blue',
       padding: 10,
       borderRadius: 5,
-      zIndex: 10, 
+      zIndex: 1,
    },
    buttonText: { color: 'white', fontWeight: 'bold' },
    polygon: { fillColor: 'rgba(0, 200, 0, 0.3)' },
+   line: { lineColor: '#a2fab1', lineWidth: 3 },
+   closingLine: { lineColor: '#fa7646', lineWidth: 2 },
    areaCard: {
       position: 'absolute',
       bottom: 160, 
-      left: 20,
-      backgroundColor: 'white',
+      left: 20, 
+      backgroundColor: 'rgba(255, 255, 255, 0.9)', 
       padding: 10,
-      borderRadius: 5,
       shadowColor: '#000',
       shadowOpacity: 0.3,
-      shadowRadius: 5,
-      shadowOffset: { width: 0, height: 2 },
-      marginBottom: 10,
-      zIndex: 5, 
+      borderRadius: 5,
+      elevation: 3, 
+      zIndex: 1,
    },
    annotationDot: {
       width: 10,
@@ -241,16 +298,24 @@ const styles = StyleSheet.create({
       position: 'absolute',
       bottom: 80, 
       right: 10,
-     backgroundColor: 'transparent',
+      backgroundColor: 'transparent',
       padding: 20,
       borderRadius: 15,
-      zIndex: 10, 
+      zIndex: 1,
    },
    locateImage: {
       width: 40,
       height: 40,
       borderRadius: 20,
    },
+   listButton:{
+      position: 'absolute',
+      bottom: 50,
+      left: 20,
+      backgroundColor: 'blue',
+      padding: 10,
+      borderRadius: 5,
+      zIndex: 1, 
+   },
+ 
 });
-
-
